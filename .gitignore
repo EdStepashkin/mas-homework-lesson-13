@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+output/
+.idea/
+venv/
+.venv/
+env/
+index/
+.deepeval/
