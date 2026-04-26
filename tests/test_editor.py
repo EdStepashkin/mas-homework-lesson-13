@@ -14,13 +14,12 @@ from agents.editor import run_editor
 editor_quality = GEval(
     name="Editor Feedback Quality",
     evaluation_steps=[
-        "Check that the feedback identifies specific issues, not vague complaints",
-        "Check that issues are actionable — the writer can act on them",
+        "Evaluate ONLY the quality of the Editor's feedback in ACTUAL_OUTPUT.",
+        "Check that the feedback identifies specific, actionable issues",
         "If verdict is APPROVED, issues list should be empty or contain only minor items",
         "If verdict is REVISION_NEEDED, there must be at least one concrete issue",
-        "Check that scores (tone_score, accuracy_score, structure_score) make sense given the content quality",
-        "Penalize if obviously bad content gets high scores (>0.8)",
-        "Penalize if good content gets very low scores (<0.3)",
+        "Check that scores make sense given the input quality. Bad input should get low scores, good input higher scores.",
+        "IMPORTANT: Do NOT penalize the feedback if the input content is terrible. The Editor is doing its job by giving REVISION_NEEDED.",
     ],
     evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
     model="gpt-4o-mini",

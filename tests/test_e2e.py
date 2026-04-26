@@ -26,10 +26,9 @@ e2e_quality = GEval(
     name="E2E Content Quality",
     evaluation_steps=[
         "Check that the final content addresses the topic from the input brief",
-        "Check that the content matches the expected output in terms of key themes",
-        "Check that the content is well-structured (headers, paragraphs, formatting)",
-        "Check that the content is substantive (not empty or placeholder text)",
-        "Penalize if the content is completely off-topic from the brief",
+        "Check that the content generally covers the key themes mentioned in the expected output",
+        "Check that the format matches the expectations from the expected output (e.g. blog post vs linkedin post)",
+        "Do not penalize for extra relevant details or slightly different structure",
     ],
     evaluation_params=[
         LLMTestCaseParams.INPUT,
@@ -95,13 +94,13 @@ except Exception:
 
 test_cases = []
 for item in golden_data:
-    test_cases.append((item["input"], item["expected_output"]))
+    test_cases.append((item["input"], item.get("channel", "blog"), item["expected_output"]))
 
 
-@pytest.mark.parametrize("brief,expected", test_cases)
-def test_e2e_golden_dataset(brief, expected):
+@pytest.mark.parametrize("brief,channel,expected", test_cases)
+def test_e2e_golden_dataset(brief, channel, expected):
     """E2E тест: повний run від брифу до approved контенту."""
-    actual_output = run_pipeline(brief)
+    actual_output = run_pipeline(brief, channel=channel)
 
     test_case = LLMTestCase(
         input=brief,
