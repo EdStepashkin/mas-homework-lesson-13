@@ -1,16 +1,12 @@
-# Мультиагентна дослідницька система з Langfuse Observability 🤖🔬📊
+# Конвеєр створення контенту 📝✨📊
 
-Мультиагентна AI-система, побудована на базі **LangChain** та **LangGraph**, яка координує трьох спеціалізованих суб-агентів за патерном **Plan → Research → Critique**.
+Мультиагентна система для створення контенту для блогу та соцмереж. Планує, пише та перевіряє якість перед публікацією.
 
-Supervisor оркеструє ітеративний цикл дослідження: Planner декомпозує запит, Researcher виконує глибокий аналіз, а Critic верифікує результати і може повернути на доопрацювання. Збереження звіту захищене через **Human-in-the-Loop (HITL)** — користувач затверджує, редагує або відхиляє фінальний документ.
+Побудована на базі **LangChain** та **LangGraph**, використовує комбінацію двох патернів Anthropic:
+- **Prompt Chaining** (Strategist → HITL gate → Writer) — лінійний pipeline з Human-in-the-Loop
+- **Evaluator-Optimizer** (Writer ↔ Editor) — цикл генерації та оцінки якості (до 5 ітерацій)
 
-**Нове в цій версії (homework-12):**
-- 📊 **Langfuse Tracing** — кожен запуск створює trace з повним деревом суб-агентів та tool calls
-- 🗂 **Session & User tracking** — traces згруповані в sessions, мають user_id
-- 📝 **Prompt Management** — усі system prompts завантажуються з Langfuse (жодних захардкоджених)
-- ⚖️ **LLM-as-a-Judge** — автоматична оцінка якості через Langfuse Evaluators
-
-> Розширення мультиагентної системи (hw-8) + тести DeepEval (hw-10) + Langfuse observability (hw-12).
+> Homework-13: Content Creation Pipeline з Langfuse Observability та LLM-as-a-Judge тестами.
 
 ---
 
@@ -18,58 +14,76 @@ Supervisor оркеструє ітеративний цикл досліджен
 
 ```
 User (REPL)
-  │
+  │ brief: topic, audience, channel, tone, word_count
   ▼
-Supervisor Agent  ◄── Langfuse CallbackHandler (tracing)
-  │
-  ├── 1. plan(request)       → Planner Agent      → structured ResearchPlan
-  │
-  ├── 2. research(plan)      → Research Agent      → findings (web + knowledge base)
-  │
-  ├── 3. critique(findings)  → Critic Agent        → structured CritiqueResult
-  │       │
-  │       ├── verdict: "APPROVE"  → step 4
-  │       └── verdict: "REVISE"   → back to step 2 with feedback (max 2 rounds)
-  │
-  └── 4. save_report(...)    → HITL gated          → approve / edit / reject
+┌─────────────────────────────────────────────────────┐
+│                  LangGraph StateGraph                │
+│                                                      │
+│  START                                               │
+│    │                                                 │
+│    ▼                                                 │
+│  Content Strategist  ─── DuckDuckGo + RAG ──→ ContentPlan
+│    │                                                 │
+│    ▼                                                 │
+│  HITL Gate ← interrupt() ─── User approves/revises plan
+│    │                                                 │
+│    ▼                                                 │
+│  Writer  ─── DuckDuckGo ──→ DraftContent             │
+│    │                                                 │
+│    ▼                                                 │
+│  Editor  ─── DuckDuckGo (fact-check) ──→ EditFeedback│
+│    │                                                 │
+│    ├── verdict: REVISION_NEEDED & iter < 5           │
+│    │   └── Command(goto="writer") ── back to Writer  │
+│    │                                                 │
+│    └── verdict: APPROVED                             │
+│        └── Save ──→ .md file ──→ END                 │
+│                                                      │
+└─────────────────────────────────────────────────────┘
 
 All system prompts loaded from Langfuse Prompt Management (label: production)
 All traces sent to Langfuse with session_id + user_id + tags
 ```
 
-### Суб-агенти
+### Агенти
 
 | Агент | Роль | Інструменти | Structured Output |
 |-------|------|-------------|-------------------|
-| **Planner** | Декомпозиція запиту у план дослідження | `web_search`, `knowledge_search` | `ResearchPlan` |
-| **Researcher** | Глибоке дослідження за планом | `web_search`, `read_url`, `knowledge_search` | — |
-| **Critic** | Верифікація якості (freshness, completeness, structure) | `web_search`, `read_url`, `knowledge_search` | `CritiqueResult` |
-| **Supervisor** | Оркестрація циклу Plan→Research→Critique→Save | `plan`, `research`, `critique`, `save_report` | — |
+| **Content Strategist** | Досліджує тему, створює контент-план | `web_search`, `knowledge_search` (RAG) | `ContentPlan` |
+| **Writer** | Пише статтю/пост за планом | `web_search`, `save_content` | `DraftContent` |
+| **Editor** | Рев'ює контент з числовими оцінками | `web_search` (fact-check) | `EditFeedback` |
+
+### Structured Output контракти (Pydantic)
+
+| Модель | Поля |
+|--------|------|
+| `ContentPlan` | `outline: list[str], keywords: list[str], key_messages: list[str], target_audience: str, tone: str` |
+| `DraftContent` | `content: str, word_count: int, keywords_used: list[str]` |
+| `EditFeedback` | `verdict: Literal["APPROVED","REVISION_NEEDED"], issues: list[str], tone_score: float, accuracy_score: float, structure_score: float` |
 
 ---
 
 ## 🌟 Ключові можливості
 
-- **Мультиагентна оркестрація**: Supervisor координує 3 спеціалізованих агенти через `create_agent`
-- **Structured Output**: Planner і Critic повертають Pydantic-моделі через `response_format`
-- **Ітеративне дослідження**: Critic може повернути Researcher на доопрацювання (evaluator-optimizer)
-- **HITL (Human-in-the-Loop)**: `HumanInTheLoopMiddleware` перехоплює `save_report`
-- **RAG з гібридним пошуком**: FAISS (семантичний) + BM25 (лексичний) + CrossEncoder реранкінг
-- **Langfuse Tracing**: повне дерево LLM-викликів, tool calls, суб-агентів у кожному trace
-- **Prompt Management**: усі system prompts завантажуються з Langfuse за іменем та label `production`
-- **Online Evaluation**: LLM-as-a-Judge автоматично оцінює нові traces
-- **Автоматизовані тести**: DeepEval із GEval метриками та e2e evaluation
+- **Prompt Chaining + Evaluator-Optimizer**: два патерни Anthropic у одному pipeline
+- **LangGraph StateGraph**: explicit nodes + conditional edges + Command API
+- **HITL gate**: `interrupt()` для затвердження ContentPlan перед написанням
+- **Evaluator-Optimizer цикл**: Writer ↔ Editor до 5 ітерацій через `Command(goto=...)`
+- **RAG для style guide**: FAISS + BM25 + CrossEncoder по brand documents
+- **Structured Output**: всі три агенти повертають Pydantic-моделі
+- **Langfuse Tracing**: повне дерево LLM-викликів, tool calls у кожному trace
+- **Prompt Management**: промпти з Langfuse за label `production`
+- **LLM-as-a-Judge тести**: DeepEval з GEval метриками
 
 ---
 
 ## 🛠 Технологічний стек
 
 - **LLM**: Google Gemini (`gemini-3-flash-preview`) через `ChatGoogleGenerativeAI`
-- **Агентний фреймворк**: `langchain.agents.create_agent` + `HumanInTheLoopMiddleware`
-- **Observability**: `langfuse` (v4+) — tracing, prompt management, evaluators
-- **Персистентність**: `langgraph.checkpoint.memory.InMemorySaver`
-- **RAG-пайплайн**: `FAISS`, `OpenAIEmbeddings`, `BM25Retriever`, `HuggingFaceCrossEncoder`, `EnsembleRetriever`
-- **Тестування**: `DeepEval` (GEval, AnswerRelevancy, ToolCorrectness), `pytest`
+- **Pipeline**: `langgraph.graph.StateGraph` з `interrupt()` та `Command`
+- **Observability**: `langfuse` — tracing, prompt management, evaluators
+- **RAG**: `FAISS`, `OpenAIEmbeddings`, `BM25Retriever`, `HuggingFaceCrossEncoder`, `EnsembleRetriever`
+- **Тестування**: `DeepEval` (GEval, AnswerRelevancy), `pytest`
 - **Конфігурація**: Pydantic `BaseSettings` + `.env`
 
 ---
@@ -77,32 +91,34 @@ All traces sent to Langfuse with session_id + user_id + tags
 ## 📁 Структура проєкту
 
 ```
-homework-lesson-12/
-├── main.py                  # REPL з Langfuse tracing + HITL interrupt/resume
-├── supervisor.py            # Supervisor Agent + HITL middleware
+homework-lesson-13/
+├── main.py                  # REPL з Langfuse tracing + HITL для ContentPlan
+├── supervisor.py            # LangGraph StateGraph (5 nodes, conditional edges)
 ├── agents/
 │   ├── __init__.py
-│   ├── planner.py           # Planner Agent (response_format=ResearchPlan)
-│   ├── research.py          # Research Agent
-│   └── critic.py            # Critic Agent (response_format=CritiqueResult)
+│   ├── strategist.py        # Content Strategist (response_format=ContentPlan)
+│   ├── writer.py            # Writer (response_format=DraftContent)
+│   └── editor.py            # Editor (response_format=EditFeedback)
 ├── config.py                # Settings + Langfuse init + get_prompt()
 ├── setup_prompts.py         # Одноразовий скрипт: створення промптів у Langfuse
-├── schemas.py               # Pydantic-моделі: ResearchPlan, CritiqueResult
-├── tools.py                 # web_search, read_url, knowledge_search, save_report
+├── schemas.py               # Pydantic: ContentPlan, DraftContent, EditFeedback, PipelineState
+├── tools.py                 # web_search, knowledge_search, save_content
 ├── retriever.py             # Hybrid search: FAISS + BM25 + CrossEncoder reranking
-├── ingest.py                # Ingestion pipeline: PDF → chunks → FAISS index
+├── ingest.py                # Ingestion pipeline: Markdown → chunks → FAISS index
+├── data/
+│   ├── style_guide.md       # Style guide бренду NovaTech Solutions
+│   ├── brand_description.md # Опис бренду: місія, продукт, конкурентні переваги
+│   └── examples/            # 7 прикладів контенту (blog posts, LinkedIn posts)
 ├── tests/
-│   ├── golden_dataset.json  # 15 golden examples
-│   ├── test_planner.py      # GEval Plan Quality
-│   ├── test_researcher.py   # GEval Groundedness
-│   ├── test_critic.py       # GEval Critique Quality
-│   ├── test_tools.py        # ToolCorrectnessMetric
-│   └── test_e2e.py          # E2E evaluation на golden dataset
-├── screenshots/             # Скріншоти Langfuse UI (trace tree, session, evaluators, prompts)
+│   ├── golden_dataset.json  # 5 golden scenarios для E2E
+│   ├── test_strategist.py   # GEval: план відповідає брифу
+│   ├── test_writer.py       # GEval: контент покриває outline + keywords
+│   ├── test_editor.py       # GEval: feedback actionable, scores адекватні
+│   └── test_e2e.py          # E2E: фінальний контент відповідає брифу
+├── screenshots/             # Скріншоти Langfuse UI
 ├── requirements.txt         # Залежності
-├── data/                    # Вхідні PDF-документи для RAG
-├── index/                   # Згенеровані індекси (не в Git)
-├── example_output/          # Приклади згенерованих звітів
+├── example_output/          # Згенерований контент (.md файли)
+├── index/                   # FAISS індекс (не в Git)
 └── .env                     # API-ключі (не в Git)
 ```
 
@@ -112,8 +128,8 @@ homework-lesson-12/
 
 ### 1. Клонування репозиторію
 ```bash
-git clone https://github.com/EdStepashkin/mas-homework-lesson-12.git
-cd homework-lesson-12
+git clone https://github.com/EdStepashkin/mas-homework-lesson-13.git
+cd homework-lesson-13
 ```
 
 ### 2. Створення віртуального середовища
@@ -129,51 +145,38 @@ pip install -r requirements.txt
 
 ### 4. Налаштування змінних середовища (.env)
 
-Створіть файл `.env` у кореневій директорії:
+Створіть файл `.env`:
 
 ```env
-# LLM та Embeddings
 GEMINI_API_KEY=AIzaSyYourApiKeyHere...
 OPENAI_API_KEY=sk-proj-YourOpenAiKey...
-
-# Langfuse Observability
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
 LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
 ```
 
-**Де взяти ключі Langfuse:**
-1. Зареєструйтесь на [us.cloud.langfuse.com](https://us.cloud.langfuse.com) (безкоштовно, без кредитної карти)
-2. Створіть Organization → Project (наприклад, `homework-12`)
-3. **Settings → API Keys → + Create new API keys** — скопіюйте `Public Key` та `Secret Key`
+### 5. Індексація brand документів (Ingestion)
 
-### 5. Індексація документів (Ingestion)
-
-Помістіть PDF-документи у папку `data/` і запустіть:
 ```bash
 python ingest.py
 ```
 
-### 6. Створення промптів у Langfuse (одноразово)
+Очікуваний вивід:
+```
+Loading Markdown documents from data/ ...
+Found 9 Markdown files:
+  - data/style_guide.md
+  - data/brand_description.md
+  - data/examples/blog_cycle_time.md
+  ...
+Generated 85 chunks.
+✅ Ingestion complete!
+```
 
-Цей скрипт завантажить system prompts усіх 4 агентів у Langfuse Prompt Management з label `production`:
+### 6. Створення промптів у Langfuse (одноразово)
 
 ```bash
 python setup_prompts.py
-```
-
-Очікуваний вивід:
-```
-Creating prompt: planner-agent ...
-  ✅ planner-agent created with label 'production'
-Creating prompt: researcher-agent ...
-  ✅ researcher-agent created with label 'production'
-Creating prompt: critic-agent ...
-  ✅ critic-agent created with label 'production'
-Creating prompt: supervisor-agent ...
-  ✅ supervisor-agent created with label 'production'
-
-🎉 All 4 prompts created in Langfuse!
 ```
 
 ### 7. Запуск системи
@@ -189,188 +192,121 @@ python main.py
 ### Як працює tracing
 
 При кожному запуску `main.py`:
-
-1. Створюється **Langfuse `CallbackHandler`**, який передається в `config={"callbacks": [langfuse_handler]}`
-2. Через `propagate_attributes()` до кожного trace додаються:
-   - `session_id` — унікальний для кожного запуску REPL (групує traces в одну сесію)
-   - `user_id` — `"Dmytro"`
-   - `tags` — `["homework-12", "multi-agent"]`
-3. Після кожного запиту виконується `langfuse.flush()` — дані відправляються в Langfuse Cloud
+1. Створюється `CallbackHandler`, який передається agents через `config`
+2. Через `propagate_attributes()` додаються `session_id`, `user_id`, `tags`
+3. Після кожного запиту — `langfuse.flush()`
 
 ### Prompt Management
 
-Усі system prompts завантажуються з Langfuse через `get_prompt()`:
+Промпти завантажуються з Langfuse через `get_prompt()`:
 
-```python
-from config import get_prompt
-
-# Завантажує prompt за іменем з label="production"
-# Компілює {{current_date}} у поточну дату
-prompt = get_prompt("supervisor-agent")
-```
-
-| Prompt Name | Агент | Template Variables |
-|-------------|-------|--------------------|
-| `planner-agent` | Planner | `{{current_date}}` |
-| `researcher-agent` | Researcher | `{{current_date}}` |
-| `critic-agent` | Critic | `{{current_date}}` |
-| `supervisor-agent` | Supervisor | `{{current_date}}` |
+| Prompt Name | Агент | Template Var |
+|-------------|-------|-------------|
+| `content-strategist` | Strategist | `{{current_date}}` |
+| `content-writer` | Writer | `{{current_date}}` |
+| `content-editor` | Editor | `{{current_date}}` |
 
 ### LLM-as-a-Judge Evaluators
 
-У Langfuse UI (\*\*LLM-as-a-Judge → Evaluators\*\*) налаштовано 2 evaluators:
-
-1. **Relevance** (numeric 1-5) — оцінює відповідність output до input запиту
-2. **Completeness** (boolean) — оцінює повноту дослідження
-
-Evaluators автоматично оцінюють кожен новий trace.
-
-### Де дивитися результати
-
-Перейдіть на [us.cloud.langfuse.com](https://us.cloud.langfuse.com) → ваш проєкт:
-
-| Розділ | Що перевірити                                                                         |
-|--------|---------------------------------------------------------------------------------------|
-| **Tracing → Traces** | Список усіх запусків. Кожен розгортається у повне дерево з суб-агентами та tool calls |
-| **Sessions** | Ваша сесія з кількома трейсами всередині                                              |
-| **Users** | Ваш user (`Dmytro`)                                                                   |
-| **Prompts** | 4 промпти з label `production`                                                        |
-| **LLM-as-a-Judge → Evaluators** | 2 evaluators та їх статус                                                             |
-| **Trace → Scores** | Автоматично проставлені scores на кожному trace                                       |
-
----
-
-## 🧪 Тестування та валідація
-
-### Тестові запити для генерації traces
-
-Після запуску `python main.py` введіть 3-5 таких запитів (один за одним):
-
-```
-You: Порівняй підходи RAG: naive, sentence-window та parent-child retrieval
-```
-
-```
-You: Які основні переваги та недоліки використання LLM агентів у продакшн-системах?
-```
-
-```
-You: Розкажи про сучасні методи fine-tuning великих мовних моделей у 2025-2026 роках
-```
-
-```
-You: Порівняй FAISS та ChromaDB для векторного пошуку
-```
-
-```
-You: Що таке Retrieval Augmented Generation і як воно працює?
-```
-
-Кожен запит пройде цикл Plan → Research → Critique → (можливо REVISE) → Save Report.
-
-На етапі `save_report` система зупиниться і попросить вас:
-```
-⏸️  ACTION REQUIRES APPROVAL
-  Tool:  save_report
-  Args:  {"filename": "...", "content": "..."}
-
-👉 approve / edit / reject:
-```
-
-Введіть `approve` щоб зберегти звіт, `edit` щоб дати фідбек, або `reject` щоб відхилити.
-
-Для виходу з системи введіть:
-```
-You: exit
-```
-
-### Перевірка результатів у Langfuse
-
-Після 3-5 запусків:
-
-1. Зайдіть на [us.cloud.langfuse.com](https://us.cloud.langfuse.com)
-2. **Tracing → Traces** — має бути 3-5 рядків, кожен розгортається у повне дерево
-3. **Sessions** — сесія з кількома трейсами
-4. **Prompts** — 4 промпти
-
-### DeepEval тести
-
-```bash
-# Усі тести
-deepeval test run tests/
-
-# Окремі файли
-deepeval test run tests/test_planner.py -v
-deepeval test run tests/test_researcher.py -v
-deepeval test run tests/test_critic.py -v
-deepeval test run tests/test_tools.py -v
-deepeval test run tests/test_e2e.py -v
-```
-
-| Файл | Що тестує | Метрика | Поріг |
-|------|-----------|---------|-------|
-| `test_planner.py` | Якість плану | `GEval("Plan Quality")` | 0.7 |
-| `test_researcher.py` | Обґрунтованість відповіді | `GEval("Groundedness")` | 0.7 |
-| `test_critic.py` | Конкретність критики | `GEval("Critique Quality")` | 0.7 |
-| `test_tools.py` | Правильність tool calls | `ToolCorrectnessMetric` | 0.5 |
-| `test_e2e.py` | Повний pipeline | `GEval` + `AnswerRelevancy` | 0.6 / 0.7 |
+У Langfuse UI налаштовано evaluators:
+1. **Relevance** (numeric 1-5) — відповідність output до input
+2. **Completeness** (boolean) — повнота контенту
 
 ---
 
 ## 💬 Приклад роботи
 
 ```
-🔬 Multi-Agent Research System (Agent-as-a-Tool / Orchestrator pattern)
-   Supervisor coordinates plan, research, critique, and save_report tools.
+📝 Content Creation Pipeline (Prompt Chaining + Evaluator-Optimizer)
+   Strategist → HITL gate → Writer ↔ Editor → Save
    📊 Langfuse tracing enabled | session: session-a1b2c3d4 | user: Dmytro
 ------------------------------------------------------------
 
-You: Порівняй підходи RAG: naive, sentence-window та parent-child retrieval
+📝 Введіть бриф для створення контенту:
+  📌 Тема: AI-асистенти в розробці: хайп чи продуктивність
+  👥 Цільова аудиторія (Enter = Tech Leads):
+  📢 Канал [blog/linkedin/twitter] (Enter = blog):
+  🎯 Тон (Enter = впевнений та експертний):
+  📏 К-ть слів (Enter = 800):
 
-🔧 plan("Порівняй підходи RAG: naive, sentence-window та parent-child retrieval")
-  📎 [plan]: 📎 ResearchPlan:
-    goal: Порівняти три підходи до RAG...
-    search_queries: ["naive RAG approach", "sentence-window retrieval", ...]
-    sources_to_check: ["knowledge_base", "web"]
-
-🔧 research("📎 ResearchPlan: goal: Порівняти три підходи...")
-  📎 [research]: 🔬 Знахідки Researcher:
-    - Факт 1: Naive RAG використовує фіксовані чанки... (джерело: knowledge_base)
-    - Факт 2: Sentence-window повертає вікно навколо... (джерело: web)
-    ...
-
-🔧 critique("🔬 Знахідки Researcher...")
-  📎 [critique]: 📎 CritiqueResult:
-    verdict: APPROVE
-    is_fresh: True
-    is_complete: True
-    strengths: ["Актуальні дані", "Покриті всі три підходи"]
-
-🔧 save_report({"filename": "rag_comparison.md", "content": "# Порівняння підходів RAG..."})
+🚀 Запускаємо pipeline для: "AI-асистенти в розробці: хайп чи продуктивність"
+   Канал: blog | Аудиторія: Tech Leads
+   Тон: впевнений та експертний | Слів: 800
 
 ============================================================
-⏸️  ACTION REQUIRES APPROVAL
+📋 КОНТЕНТ-ПЛАН НА ЗАТВЕРДЖЕННЯ
 ============================================================
-  Tool:  save_report
-  Args:  {"filename": "rag_comparison.md", "content": "# Порівняння підходів RAG..."}
+📋 ContentPlan:
+  outline: ['Вступ: AI-хайп vs реальність', 'Де AI працює найкраще', ...]
+  keywords: ['AI assistants', 'developer productivity', ...]
+  key_messages: ['AI прискорює рутину, але не замінює архітектурні рішення']
+  target_audience: Tech Leads
+  tone: впевнений та експертний
+============================================================
 
-👉 approve / edit / reject: approve
+👉 approve (затвердити) / feedback (доопрацювати) / reject: approve
 
-✅ Approved! Зберігаємо...
+✅ План затверджено! Writer починає писати...
 
-🤖 Agent: Звіт збережено у example_output/rag_comparison.md
+============================================================
+✅ КОНТЕНТ СТВОРЕНО!
+============================================================
+  📊 Ітерацій Writer↔Editor: 2
+  📝 Останній feedback Editor:
+     verdict: APPROVED
+     tone_score: 0.9
+     accuracy_score: 0.85
+     structure_score: 0.9
+
+  📄 Превʼю контенту:
+# AI-асистенти в розробці: хайп чи реальна продуктивність?
+
+Кожна друга стаття в tech-медіа обіцяє: "AI замінить розробників"...
+============================================================
 ```
+
+---
+
+## 🧪 Тестування (LLM-as-a-Judge)
+
+### Запуск тестів
+
+```bash
+# Усі тести
+deepeval test run tests/
+
+# Окремі файли
+deepeval test run tests/test_strategist.py -v
+deepeval test run tests/test_writer.py -v
+deepeval test run tests/test_editor.py -v
+deepeval test run tests/test_e2e.py -v
+```
+
+### Що тестується
+
+| Файл | Що тестується | Критерій | Поріг |
+|------|--------------|----------|-------|
+| `test_strategist.py` | Strategist | План відповідає брифу: audience, tone, channel | 0.7 |
+| `test_writer.py` | Writer | Контент покриває outline та keywords з плану | 0.7 |
+| `test_editor.py` | Editor | Feedback actionable, scores адекватні якості | 0.7 |
+| `test_e2e.py` | End-to-end | Фінальний контент відповідає початковому брифу | 0.6 / 0.7 |
+
+### RAG Data для бренду
+
+Бренд **NovaTech Solutions** (вигаданий):
+- Style guide: tone of voice, аудиторія, заборонені/рекомендовані формулювання
+- Brand description: місія, продукт, конкурентні переваги
+- 7 прикладів контенту: 4 blog posts + 3 LinkedIn posts
 
 ---
 
 ## 📸 Скріншоти Langfuse UI
 
 Скріншоти знаходяться в папці `screenshots/`:
-
 1. **Trace tree** — повне дерево суб-агентів та tool calls
 2. **Session** — сесія з кількома трейсами
 3. **Evaluator scores** — автоматичні оцінки від LLM-as-a-Judge
-4. **Prompt management** — промпти всіх 4 агентів
+4. **Prompt management** — промпти 3 агентів
 
 ---
 

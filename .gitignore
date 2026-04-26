@@ -1,10 +1,13 @@
 .env
+index/
+example_output/
 __pycache__/
+.pytest_cache/
+.deepeval/
 *.pyc
+.DS_Store
 output/
 .idea/
 venv/
 .venv/
 env/
-index/
-.deepeval/

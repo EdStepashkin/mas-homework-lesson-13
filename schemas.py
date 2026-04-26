@@ -1,29 +1,60 @@
 """
-Pydantic models for structured agent outputs.
+Pydantic models for the Content Creation Pipeline.
 
-ResearchPlan — output of Planner Agent
-CritiqueResult — output of Critic Agent
+ContentPlan  — output of Content Strategist
+DraftContent — output of Writer
+EditFeedback — output of Editor
 """
 
-from typing import Literal
+from typing import Literal, Annotated
 from pydantic import BaseModel, Field
+from langgraph.graph.message import add_messages
 
 
+class ContentPlan(BaseModel):
+    """Structured content plan produced by the Content Strategist."""
+    outline: list[str] = Field(description="Content outline — ordered list of sections/points")
+    keywords: list[str] = Field(description="SEO / topic keywords to use in the content")
+    key_messages: list[str] = Field(description="Core messages the content must convey")
+    target_audience: str = Field(description="Who this content is for")
+    tone: str = Field(description="Desired tone of voice for the content")
 
-class ResearchPlan(BaseModel):
-    """Structured research plan produced by the Planner Agent."""
-    goal: str = Field(description="What we are trying to answer")
-    search_queries: list[str] = Field(description="Specific queries to execute")
-    sources_to_check: list[str] = Field(description="'knowledge_base', 'web', or both")
-    output_format: str = Field(description="What the final report should look like")
+
+class DraftContent(BaseModel):
+    """Draft content produced by the Writer."""
+    content: str = Field(description="Full text of the article/post in Markdown")
+    word_count: int = Field(description="Number of words in the content")
+    keywords_used: list[str] = Field(description="Keywords actually used in the content")
 
 
-class CritiqueResult(BaseModel):
-    """Structured critique produced by the Critic Agent."""
-    verdict: Literal["APPROVE", "REVISE"] = Field(description="Whether the research is ready or needs revision")
-    is_fresh: bool = Field(description="Is the data up-to-date and based on recent sources?")
-    is_complete: bool = Field(description="Does the research fully cover the user's original request?")
-    is_well_structured: bool = Field(description="Are findings logically organized and ready for a report?")
-    strengths: list[str] = Field(description="What is good about the research")
-    gaps: list[str] = Field(description="What is missing, outdated, or poorly structured")
-    revision_requests: list[str] = Field(description="Specific things to fix if verdict is REVISE")
+class EditFeedback(BaseModel):
+    """Structured feedback produced by the Editor."""
+    verdict: Literal["APPROVED", "REVISION_NEEDED"] = Field(
+        description="Whether the content is approved or needs revision"
+    )
+    issues: list[str] = Field(description="Specific issues found in the content")
+    tone_score: float = Field(description="Tone of voice adherence score (0.0–1.0)")
+    accuracy_score: float = Field(description="Factual accuracy score (0.0–1.0)")
+    structure_score: float = Field(description="Structure and readability score (0.0–1.0)")
+
+
+# ─────────────────────────────────────────────
+# LangGraph Pipeline State
+# ─────────────────────────────────────────────
+from typing import TypedDict
+
+class PipelineState(TypedDict):
+    """State for the LangGraph content creation pipeline."""
+    messages: Annotated[list, add_messages]
+    # Brief from user
+    topic: str
+    target_audience: str
+    channel: str
+    tone: str
+    word_count: int
+    # Pipeline data
+    content_plan: str          # serialized ContentPlan
+    draft: str                 # current draft content
+    edit_feedback: str         # serialized EditFeedback
+    iteration: int             # current Writer↔Editor iteration
+    final_content: str         # approved final content

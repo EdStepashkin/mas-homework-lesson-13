@@ -26,8 +26,9 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 10
     rerank_top_n: int = 3
 
-    # Agent
+    # Content Pipeline
     output_dir: str = "example_output"
+    max_revisions: int = 5
     max_iterations: int = 30
 
     # Langfuse
@@ -80,7 +81,7 @@ def get_prompt(name: str) -> str:
     Використовує label 'production'. Компілює з поточною датою.
     
     Args:
-        name: Ім'я промпту в Langfuse (e.g. "planner-agent")
+        name: Ім'я промпту в Langfuse (e.g. "content-strategist")
     
     Returns:
         Скомпільований текст промпту з підставленими змінними.
