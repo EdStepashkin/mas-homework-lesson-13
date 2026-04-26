@@ -1,6 +1,5 @@
 .env
 index/
-example_output/
 __pycache__/
 .pytest_cache/
 .deepeval/
